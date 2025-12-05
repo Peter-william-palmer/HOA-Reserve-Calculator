@@ -82,7 +82,26 @@ def calculate_projection_detailed(df, start_balance, annual_contribution, contri
 
     return pd.DataFrame(projection_data)
 
-def generate_pdf_report(proj_df, component_df, percent_funded, ffb, starting_balance, min_bal):
+def generate_ai_suggestions(percent_funded, min_bal, failure_year):
+    """Generates dynamic 'AI' suggestions based on financial health."""
+    suggestions = []
+    
+    if percent_funded < 30:
+        suggestions.append("🔴 **CRITICAL:** Your fund is critically low. A large Special Assessment is likely unavoidable in the next 1-3 years.")
+        suggestions.append("💡 **Strategy:** Consider an immediate 'Catch-up' assessment to reach at least 30% funded to avoid FHA loan ineligibility.")
+    elif percent_funded < 70:
+        suggestions.append("🟡 **WARNING:** You are in the 'High Risk' zone. Massachusetts lenders prefer >70% funded.")
+        suggestions.append(f"💡 **Strategy:** Increase annual contributions aggressively (e.g., 5-8% annually) for the next 5 years to stabilize.")
+    
+    if min_bal < 0:
+        suggestions.append(f"❌ **CASH FLOW FAILURE:** You run out of money in **Year {failure_year}**.")
+        suggestions.append(f"💡 **Fix:** You must levy a Special Assessment *before* Year {failure_year} or defer projects scheduled for that year.")
+    else:
+        suggestions.append("✅ **Cash Flow Safe:** Your baseline plan covers all expenses for 30 years.")
+        
+    return suggestions
+
+def generate_pdf_report(proj_df, component_df, percent_funded, ffb, starting_balance, min_bal, ai_suggestions):
     """Generates a simple PDF report."""
     pdf = FPDF()
     pdf.add_page()
@@ -103,6 +122,15 @@ def generate_pdf_report(proj_df, component_df, percent_funded, ffb, starting_bal
     pdf.cell(200, 10, txt=f"Percent Funded: {percent_funded:.1f}%", ln=True)
     pdf.cell(200, 10, txt=f"Lowest Projected Balance (30 Years): ${min_bal:,.2f}", ln=True)
     
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(200, 10, txt="AI-Generated Strategic Suggestions", ln=True)
+    pdf.set_font("Arial", size=10)
+    for suggestion in ai_suggestions:
+        # Strip markdown for PDF
+        clean_text = suggestion.replace("**", "").replace("🔴", "").replace("🟡", "").replace("💡", "").replace("❌", "").replace("✅", "")
+        pdf.multi_cell(0, 10, f"- {clean_text}")
+
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(200, 10, txt="Component List", ln=True)
@@ -158,19 +186,29 @@ starting_balance = st.sidebar.number_input("Current Reserve Cash ($)", min_value
 
 # Annual Contribution with BIG PER UNIT DISPLAY
 annual_contribution = st.sidebar.number_input("Annual Reserve Contribution ($)", min_value=0.0, value=25000.0, step=500.0, format="%.2f")
-per_unit_monthly = annual_contribution / num_units / 12
-st.sidebar.markdown(f"<h2 style='text-align: center; color: #4CAF50;'>${per_unit_monthly:,.2f}</h2>", unsafe_allow_html=True)
-st.sidebar.markdown("<p style='text-align: center;'><b>per unit / per month</b></p>", unsafe_allow_html=True)
+if num_units > 0:
+    per_unit_monthly = annual_contribution / num_units / 12
+    st.sidebar.markdown(f"<h2 style='text-align: center; color: #4CAF50;'>${per_unit_monthly:,.2f}</h2>", unsafe_allow_html=True)
+    st.sidebar.markdown("<p style='text-align: center;'><b>per unit / per month</b></p>", unsafe_allow_html=True)
 
 contribution_increase = st.sidebar.slider("Annual Dues Increase (%)", 0.0, 10.0, 2.0, 0.1) / 100
 
 st.sidebar.header("3. Economic Assumptions")
-inflation_rate = st.sidebar.slider("Inflation Rate (%)", 0.0, 10.0, 3.2, 0.1) / 100
-interest_rate = st.sidebar.slider("Interest Rate on Savings (%)", 0.0, 8.0, 1.8, 0.1) / 100
+# Hard-coded defaults
+inflation_rate_default = 3.2
+interest_rate_default = 1.8
+
+inflation_rate = st.sidebar.slider("Inflation Rate (%)", 0.0, 10.0, inflation_rate_default, 0.1) / 100
+interest_rate = st.sidebar.slider("Interest Rate on Savings (%)", 0.0, 8.0, interest_rate_default, 0.1) / 100
 
 st.sidebar.header("4. Special Assessment")
 assessment_year = st.sidebar.number_input("Assessment Year", 1, 30, 1)
-assessment_amount = st.sidebar.number_input("Total Assessment ($)", min_value=0.0, value=0.0, step=5000.0)
+assessment_amount = st.sidebar.number_input("Total Assessment ($)", min_value=0.0, value=0.0, step=5000.0, format="%.2f")
+
+# Show the impact per unit immediately
+if assessment_amount > 0 and num_units > 0:
+    cost_per_unit = assessment_amount / num_units
+    st.sidebar.warning(f"⚠️ Cost Per Unit: **${cost_per_unit:,.2f}**")
 
 # --- TAB 2: COMPONENTS (Editable) ---
 with tab2:
@@ -178,23 +216,24 @@ with tab2:
     st.info("Add or remove rows below. Data saves automatically.")
     
     # Presets Logic
+    BOSTON_PRESETS = {
+        "Asphalt Roof (Large)": {'Component Name': 'New Asphalt Roof', 'Current Cost': 120000.0, 'Useful Life': 25, 'Remaining Useful Life': 25, 'Notes': 'Boston Avg'},
+        "Rubber Roof (Flat)": {'Component Name': 'EPDM Rubber Roof', 'Current Cost': 80000.0, 'Useful Life': 20, 'Remaining Useful Life': 20, 'Notes': 'Boston Avg'},
+        "Boiler System": {'Component Name': 'Commercial Boiler', 'Current Cost': 45000.0, 'Useful Life': 25, 'Remaining Useful Life': 15, 'Notes': 'Boston Avg'},
+        "Elevator Modernization": {'Component Name': 'Elevator Mod', 'Current Cost': 100000.0, 'Useful Life': 25, 'Remaining Useful Life': 10, 'Notes': 'Hydraulic'},
+        "Ext. Painting (Wood)": {'Component Name': 'Full Ext Paint', 'Current Cost': 25000.0, 'Useful Life': 6, 'Remaining Useful Life': 3, 'Notes': 'Cycles fast in NE'},
+        "Paving Overlay": {'Component Name': 'Pavement Overlay', 'Current Cost': 35000.0, 'Useful Life': 20, 'Remaining Useful Life': 5, 'Notes': '2 inch overlay'}
+    }
+    
     col_preset, col_btn = st.columns([3, 1])
     with col_preset:
-        preset_option = st.selectbox("Quick Add (2025 Greater Boston Averages)", 
-                                     ["Select...", "Asphalt Roof (Large)", "Rubber Roof (Flat)", "Boiler System", "Elevator Modernization", "Ext. Painting (Wood)", "Paving Overlay"])
+        preset_option = st.selectbox("Quick Add (2025 Greater Boston Averages)", ["Select..."] + list(BOSTON_PRESETS.keys()))
     with col_btn:
-        st.write("") # Spacer
+        st.write("") 
         st.write("") 
         if st.button("Add Preset"):
-            new_row = {}
-            if "Asphalt Roof" in preset_option: new_row = {'Component Name': 'New Asphalt Roof', 'Current Cost': 120000.0, 'Useful Life': 25, 'Remaining Useful Life': 25, 'Notes': 'Boston Avg'}
-            elif "Rubber Roof" in preset_option: new_row = {'Component Name': 'EPDM Rubber Roof', 'Current Cost': 80000.0, 'Useful Life': 20, 'Remaining Useful Life': 20, 'Notes': 'Boston Avg'}
-            elif "Boiler" in preset_option: new_row = {'Component Name': 'Commercial Boiler', 'Current Cost': 45000.0, 'Useful Life': 25, 'Remaining Useful Life': 15, 'Notes': 'Boston Avg'}
-            elif "Elevator" in preset_option: new_row = {'Component Name': 'Elevator Mod', 'Current Cost': 100000.0, 'Useful Life': 25, 'Remaining Useful Life': 10, 'Notes': 'Hydraulic'}
-            elif "Painting" in preset_option: new_row = {'Component Name': 'Full Ext Paint', 'Current Cost': 25000.0, 'Useful Life': 6, 'Remaining Useful Life': 3, 'Notes': 'Cycles fast in NE'}
-            elif "Paving" in preset_option: new_row = {'Component Name': 'Pavement Overlay', 'Current Cost': 35000.0, 'Useful Life': 20, 'Remaining Useful Life': 5, 'Notes': '2 inch overlay'}
-            
-            if new_row:
+            if preset_option != "Select...":
+                new_row = BOSTON_PRESETS[preset_option]
                 st.session_state.component_df = pd.concat([st.session_state.component_df, pd.DataFrame([new_row])], ignore_index=True)
                 st.rerun()
 
@@ -213,6 +252,10 @@ proj_df = calculate_projection_detailed(
     inflation_rate, interest_rate, assessment_year, assessment_amount, 30
 )
 min_bal = proj_df['End Balance'].min()
+failure_year = proj_df[proj_df['End Balance'] < 0].iloc[0]['Year'] if min_bal < 0 else None
+
+# Generate AI Suggestions
+ai_suggestions = generate_ai_suggestions(percent_funded, min_bal, failure_year)
 
 # --- TAB 1: DASHBOARD ---
 with tab1:
@@ -226,9 +269,9 @@ with tab1:
             'axis': {'range': [None, 130]},
             'bar': {'color': "black"},
             'steps': [
-                {'range': [0, 50], 'color': "#FFCDD2"},  # Red
-                {'range': [50, 70], 'color': "#FFF9C4"}, # Yellow
-                {'range': [70, 130], 'color': "#C8E6C9"} # Green
+                {'range': [0, 50], 'color': "#FFCDD2"},  # Red < 50%
+                {'range': [50, 70], 'color': "#FFF9C4"}, # Yellow 50-69%
+                {'range': [70, 130], 'color': "#C8E6C9"} # Green >= 70%
             ],
             'threshold': {
                 'line': {'color': "red", 'width': 4},
@@ -253,10 +296,22 @@ with tab1:
     else:
         st.success("✅ **HEALTHY:** Above the 70% threshold recommended by lenders.")
 
-    # FFB Expander
-    st.caption(f"Fully Funded Balance Goal: ${ffb:,.2f}")
-    with st.expander("How is this calculated?"):
-        st.write("Sum of (Current Replacement Cost × Years Already Used ÷ Total Useful Life) for every component – the CAI-recommended Component Method used by every Massachusetts reserve study firm.")
+    # Key Metrics
+    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+    with col_k1: st.metric("Starting Balance", f"${starting_balance:,.2f}")
+    with col_k2: 
+        st.metric("Fully Funded Balance", f"${ffb:,.2f}")
+        with st.expander("How this is calculated"):
+             st.write("Sum of (Current Replacement Cost × Years Already Used ÷ Total Useful Life) for every component – the CAI-recommended Component Method used by every Massachusetts reserve study firm.")
+    with col_k3: st.metric("Annual Contribution", f"${annual_contribution:,.2f}")
+    with col_k4: st.metric("Lowest Projected Balance", f"${min_bal:,.2f}", delta_color="off" if min_bal > 0 else "inverse")
+    
+    # AI Analysis Box
+    st.markdown("### 🤖 AI Financial Analyst")
+    for suggestion in ai_suggestions:
+        st.markdown(suggestion)
+
+    st.divider()
 
     # 2. INTERACTIVE CHART
     st.subheader("30-Year Cash Flow & Projects")
@@ -270,13 +325,13 @@ with tab1:
         y='End Balance',
         color='Color',
         color_discrete_map={'Negative': 'red', 'Positive': 'blue'},
-        hover_data=['Expenditures', 'Projects'],
+        hover_data={'Year': True, 'End Balance': ':$.2f', 'Expenditures': ':$.2f', 'Projects': True},
         title="Projected Year-End Balance (Hover for Project Details)"
     )
     fig_bar.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['Expenditures'], mode='lines', name='Expenses', line=dict(color='orange', width=2, dash='dot')))
     st.plotly_chart(fig_bar, use_container_width=True)
 
-# --- TAB 3: TIMELINE ---
+# --- TAB 3: TIMELINE (FIXED LOGIC) ---
 with tab3:
     st.subheader("Projected Replacement Timeline")
     
@@ -288,23 +343,52 @@ with tab3:
         rul = row['Remaining Useful Life']
         ul = row['Useful Life']
         name = row['Component Name']
+        cost = row['Current Cost']
         
-        # Add the next replacement
-        rep_year = current_year_val + rul
-        gantt_data.append(dict(Task=name, Start=rep_year, Finish=rep_year+1, Type='Next Replacement'))
-        
-        # Add the one after that (if within 30 years)
-        next_rep = rep_year + ul
-        if next_rep < current_year_val + 30:
-            gantt_data.append(dict(Task=name, Start=next_rep, Finish=next_rep+1, Type='Future Replacement'))
+        if ul > 0:
+            last_rep_year = current_year_val - rul
+            
+            i = 0
+            while True:
+                replacement_year = last_rep_year + (ul * i)
+                
+                if replacement_year > current_year_val and replacement_year <= current_year_val + 30:
+                    year_offset = replacement_year - current_year_val
+                    future_cost = cost * ((1 + inflation_rate) ** year_offset)
+                    
+                    gantt_data.append(dict(
+                        Task=name, 
+                        Start=datetime(replacement_year, 1, 1), 
+                        Finish=datetime(replacement_year, 12, 31),
+                        Cost=f"${future_cost:,.0f}"
+                    ))
+                
+                if replacement_year > current_year_val + 30:
+                    break
+                
+                i += 1
 
     if gantt_data:
         gantt_df = pd.DataFrame(gantt_data)
-        fig_gantt = px.timeline(gantt_df, x_start="Start", x_end="Finish", y="Task", color="Type")
+        
+        fig_gantt = px.timeline(
+            gantt_df, 
+            x_start="Start", 
+            x_end="Finish", 
+            y="Task", 
+            color="Task", 
+            color_discrete_sequence=px.colors.qualitative.Pastel,
+            hover_data={"Start": "|%Y", "Finish": "|%Y", "Task": False, "Cost": True}
+        )
         fig_gantt.update_yaxes(autorange="reversed")
+        fig_gantt.update_layout(
+            title="Component Replacement Schedule (30 Years)",
+            xaxis_title="Year",
+            height=600 
+        )
         st.plotly_chart(fig_gantt, use_container_width=True)
     else:
-        st.write("Add components to see the timeline.")
+        st.write("Please add components in the 'Components' tab to see the timeline.")
 
 # --- TAB 4: SENSITIVITY & TOOLS ---
 with tab4:
@@ -314,16 +398,12 @@ with tab4:
     
     # SOLVER 1: REACH 70%
     with col_solver:
-        st.markdown("#### 🎯 Reach 70% in 5 Years")
-        if st.button("Calculate Required Contribution"):
-            # Simple iterator
+        st.markdown("#### 🎯 Reach 70% Funded in 5 Years")
+        if st.button("Calculate contribution to reach 70% funded in 5 years"):
             test_contribution = annual_contribution
             found = False
-            for i in range(1000): # Limit iterations
+            for i in range(1000): 
                 temp_proj = calculate_projection_detailed(df, starting_balance, test_contribution, contribution_increase, inflation_rate, interest_rate, assessment_year, assessment_amount, 5)
-                # Calculate future FFB (approximate for speed)
-                # Future FFB is harder, let's just aim for a balance target or simple logic. 
-                # Let's assume FFB grows by inflation.
                 future_ffb = ffb * ((1+inflation_rate)**5)
                 yr5_bal = temp_proj.iloc[4]['End Balance']
                 
@@ -344,72 +424,63 @@ with tab4:
         st.markdown("#### 🛡️ Special Assessment Minimizer")
         st.caption("Finds the smallest assessment needed to keep balance > $0.")
         if st.button("Find Minimum Fix"):
-            # Check if needed
             if min_bal >= 0:
                 st.success("No assessment needed! You are fully funded.")
             else:
-                # Find the lowest dip
                 deficit = abs(min_bal)
-                # Simple logic: Assess the deficit amount in Year 1 (simplest safety)
                 rec_assess = deficit
                 per_unit_assess = rec_assess / num_units
-                st.error(f"Recommended Assessment: ${rec_assess:,.0f}")
+                st.error(f"Recommended Assessment (Total): ${rec_assess:,.0f}")
                 st.metric("Cost Per Unit", f"${per_unit_assess:,.2f}")
-                st.info("Apply this in Sidebar 'Special Assessment' to verify.")
+                st.info("Apply this in Sidebar 'Special Assessment' to verify the fix.")
 
     st.divider()
     
-    st.subheader("📉 Inflation Sensitivity")
-    st.write("Vary inflation/interest to see impact on the 'Lowest Projected Balance'.")
+    st.subheader("📉 Inflation Sensitivity Analysis")
+    st.write("Vary assumptions to instantly see the impact on the lowest balance.")
     
     col_sens1, col_sens2 = st.columns(2)
     with col_sens1:
-        sens_inflation = st.slider("Test Inflation", inflation_rate - 0.02, inflation_rate + 0.02, inflation_rate, 0.005, format="%.3f")
+        sens_inflation = st.slider("Test Inflation (%)", inflation_rate_default - 2.0, inflation_rate_default + 2.0, inflation_rate_default, 0.1, format="%.1f") / 100
     with col_sens2:
-        sens_interest = st.slider("Test Interest", interest_rate - 0.01, interest_rate + 0.01, interest_rate, 0.005, format="%.3f")
+        sens_interest = st.slider("Test Interest (%)", interest_rate_default - 1.0, interest_rate_default + 1.0, interest_rate_default, 0.1, format="%.1f") / 100
         
-    # Quick calc for sensitivity
     sens_proj = calculate_projection_detailed(df, starting_balance, annual_contribution, contribution_increase, sens_inflation, sens_interest, assessment_year, assessment_amount, 30)
     sens_min = sens_proj['End Balance'].min()
-    st.metric("Lowest Balance (Sensitivity)", f"${sens_min:,.0f}", delta=f"{sens_min - min_bal:,.0f}")
+    st.metric("Lowest Balance (Sensitivity)", f"${sens_min:,.2f}", delta=f"{sens_min - min_bal:,.2f}", delta_color="inverse" if sens_min < min_bal else "normal")
+
 
 # --- TAB 5: REPORT & SHARE ---
 with tab5:
     st.subheader("📄 Export & Share")
     
     # PDF
-    if st.button("Generate PDF Report"):
+    if st.button("Download PDF Report"):
         try:
-            pdf_bytes = generate_pdf_report(proj_df, df, percent_funded, ffb, starting_balance, min_bal)
+            pdf_bytes = generate_pdf_report(proj_df, df, percent_funded, ffb, starting_balance, min_bal, ai_suggestions)
             b64 = base64.b64encode(pdf_bytes).decode()
-            href = f'<a href="data:application/octet-stream;base64,{b64}" download="MA_Condo_Reserve_Report.pdf">Download PDF File</a>'
+            href = f'<a href="data:application/octet-stream;base64,{b64}" download="MA_Condo_Reserve_Report.pdf">Click here to download the PDF report.</a>'
             st.markdown(href, unsafe_allow_html=True)
         except Exception as e:
-            st.error(f"Error generating PDF: {e}")
+            st.error(f"Error generating PDF: {e}. Check your FPDF installation.")
 
     st.divider()
     
-    # Share Link
     st.subheader("🔗 Share Settings")
-    st.caption("Note: This link shares your Financial Inputs (Sidebar). Component data is not saved in the link due to size limits.")
+    st.caption("The link below encodes your financial assumptions. Component data must be re-uploaded or manually entered by the recipient.")
     
     # Construct URL with query params
-    base_url = "https://hoa-reserve-calculator.streamlit.app/" # Replace with actual if known
-    params = f"?balance={starting_balance}&contrib={annual_contribution}&units={num_units}&inf={inflation_rate}&int={interest_rate}"
-    st.code(f"{base_url}{params}", language="text")
+    base_url = "https://hoa-reserve-calculator.streamlit.app/" 
+    params = f"balance={starting_balance}&contrib={annual_contribution}&units={num_units}&inf={inflation_rate}&int={interest_rate}"
+    
+    st.code(f"Your custom view link: {base_url}?{params}", language="text")
+    st.button("Copy Results Link") # User action to copy
 
     st.divider()
     
-    # Feedback
     st.subheader("Feedback")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        if st.button("👍 Useful"):
-            st.toast("Thanks for the feedback!")
+        st.button("👍 Useful")
     with col_f2:
-        if st.button("👎 Needs Work"):
-            st.toast("We'll keep improving!")
-
-# --- Query Param Loading (Simple Implementation) ---
-# Note: To make this robust requires checking query params at start. 
-# For this version, we just display the link generator.
+        st.button("👎 Needs Work")
