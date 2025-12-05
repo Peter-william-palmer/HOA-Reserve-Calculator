@@ -138,36 +138,4 @@ def generate_pdf_report(proj_df, component_df, percent_funded, ffb, starting_bal
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(200, 10, txt="AI-Generated Strategic Suggestions", ln=True)
-    pdf.set_font("Arial", size=10)
-    for suggestion in ai_suggestions:
-        # Strip markdown for PDF
-        clean_text = suggestion.replace("**", "").replace("🔴", "").replace("🟡", "").replace("💡", "").replace("❌", "").replace("✅", "")
-        pdf.multi_cell(0, 10, f"- {clean_text}")
-
-    pdf.ln(10)
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(200, 10, txt="Component List", ln=True)
-    pdf.set_font("Arial", size=10)
-    
-    # Table Header
-    col_width = 45
-    pdf.cell(col_width, 10, "Component", 1)
-    pdf.cell(30, 10, "Cost", 1)
-    pdf.cell(20, 10, "UL", 1)
-    pdf.cell(20, 10, "RUL", 1)
-    pdf.ln()
-    
-    # Table Rows
-    for index, row in component_df.iterrows():
-        try:
-            pdf.cell(col_width, 10, str(row['Component Name'])[:20], 1)
-            pdf.cell(30, 10, f"${float(row['Current Cost']):,.0f}", 1)
-            pdf.cell(20, 10, str(int(row['Useful Life'])), 1)
-            pdf.cell(20, 10, str(int(row['Remaining Useful Life'])), 1)
-            pdf.ln()
-        except:
-            continue
-
-    pdf.ln(10)
-    pdf.set_font("Arial", 'I', 10)
-    pdf.multi_cell(0
+    pdf.set_
